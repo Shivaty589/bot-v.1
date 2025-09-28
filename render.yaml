@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: bot-v1
+    runtime: python3
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        sync: false
+      - key: HF_API_KEY
+        sync: false
+      - key: YOUTUBE_KEY
+        sync: false
+      - key: DATA_DIR
+        value: data
+      - key: WALLET_SCAN_SEC
+        value: "5"
+      - key: MAX_ANTIDUPE
+        value: "200"
+      - key: SUI_RPC
+        value: "https://fullnode.mainnet.sui.io:443"
+      - key: BINANCE_KLINES_LIMIT
+        value: "120"
