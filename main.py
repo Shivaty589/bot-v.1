@@ -52,7 +52,7 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 HF_API_KEY = os.getenv("HF_API_KEY")  # optional (HF text->video)
 YOUTUBE_KEY = os.getenv("YOUTUBE_KEY")  # optional
 DATA_DIR = os.getenv("DATA_DIR", "data")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", f"{os.getenv('RENDER_EXTERNAL_URL', 'http://localhost:5000')}/webhook")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", f"{os.getenv('RENDER_EXTERNAL_URL') or (f'https://{os.getenv('VERCEL_URL')}' if os.getenv('VERCEL_URL') else 'http://localhost:5000')}/webhook")
 
 # Sui RPC endpoints (primary + fallbacks)
 SUI_RPC = os.getenv("SUI_RPC", "https://fullnode.mainnet.sui.io:443")
@@ -1089,8 +1089,6 @@ async def wallet_job(context: ContextTypes.DEFAULT_TYPE):
                     await context.bot.send_message(chat_id=chat_id, text=summary)
             data["last_ts"] = new_ts
             save_wallets(chat_id, wallets)
-    # Reschedule
-    context.job_queue.run_repeating(wallet_job, interval=WALLET_SCAN_SEC, data={"chat_id": chat_id}, name=f"wallet_{chat_id}")
 
 
 # -------- Flask app for health checks and webhooks --------
@@ -1108,17 +1106,19 @@ def health():
 @app.route('/webhook', methods=['POST'])
 def webhook():
     update = Update.de_json(request.get_json(force=True), application.bot)
-    application.process_update(update)
+    if update:
+        asyncio.run(application.process_update(update))
     return 'ok'
 
 # -------- Main --------
-async def setup_bot():
+def setup_bot():
     global application
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
     # Set webhook
-    await application.bot.set_webhook(url=WEBHOOK_URL)
-    log.info(f"Webhook set to {WEBHOOK_URL}")
+    if WEBHOOK_URL and not WEBHOOK_URL.startswith('http://localhost'):
+        asyncio.run(application.bot.set_webhook(url=WEBHOOK_URL))
+        log.info(f"Webhook set to {WEBHOOK_URL}")
 
     # Command handlers
     application.add_handler(CommandHandler("start", cmd_start))
@@ -1140,18 +1140,19 @@ async def setup_bot():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     # Start wallet jobs for existing users (load from data dir)
-    for file in glob(os.path.join(DATA_DIR, "wallets_user_*.json")):
-        chat_id = int(re.search(r"wallets_user_(\d+)", file).group(1))
-        if load_wallets(chat_id):  # If has wallets
-            application.job_queue.run_repeating(wallet_job, interval=WALLET_SCAN_SEC, data={"chat_id": chat_id}, name=f"wallet_{chat_id}")
+    if not os.getenv('VERCEL'):
+        for file in glob(os.path.join(DATA_DIR, "wallets_user_*.json")):
+            chat_id = int(re.search(r"wallets_user_(\d+)", file).group(1))
+            if load_wallets(chat_id):  # If has wallets
+                application.job_queue.run_repeating(wallet_job, interval=WALLET_SCAN_SEC, data={"chat_id": chat_id}, name=f"wallet_{chat_id}")
 
     log.info("Bot starting...")
 
     # Run Flask app in thread
-    def run_flask():
-        app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+    if not os.getenv('VERCEL'):
+        def run_flask():
+            app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
 
-    threading.Thread(target=run_flask).start()
+        threading.Thread(target=run_flask).start()
 
-if __name__ == "__main__":
-    asyncio.run(setup_bot())
+setup_bot()
