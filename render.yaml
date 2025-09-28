@@ -1,9 +1,9 @@
 services:
   - type: web
-    name: bot-v1
-    runtime: python3
+    name: telegram-bot
+    env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python main.py
+    startCommand: python3 main.py
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
@@ -12,7 +12,7 @@ services:
       - key: OPENAI_API_KEY
         sync: false
       - key: OPENAI_MODEL
-        sync: false
+        value: gpt-4o-mini
       - key: HF_API_KEY
         sync: false
       - key: YOUTUBE_KEY
@@ -27,3 +27,5 @@ services:
         value: "https://fullnode.mainnet.sui.io:443"
       - key: BINANCE_KLINES_LIMIT
         value: "120"
+      - key: PYTHON_VERSION
+        value: 3.11.9
