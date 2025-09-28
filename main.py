@@ -32,10 +32,8 @@ try:
 except Exception:
     genai = None
 
-from telegram import Update, ChatPermissions
+from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
-from flask import Flask, request
-import threading
 
 # dotenv support
 try:
@@ -52,7 +50,6 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 HF_API_KEY = os.getenv("HF_API_KEY")  # optional (HF text->video)
 YOUTUBE_KEY = os.getenv("YOUTUBE_KEY")  # optional
 DATA_DIR = os.getenv("DATA_DIR", "data")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", f"{os.getenv('RENDER_EXTERNAL_URL') or (f'https://{os.getenv('VERCEL_URL')}' if os.getenv('VERCEL_URL') else 'http://localhost:5000')}/webhook")
 
 # Sui RPC endpoints (primary + fallbacks)
 SUI_RPC = os.getenv("SUI_RPC", "https://fullnode.mainnet.sui.io:443")
@@ -1091,34 +1088,9 @@ async def wallet_job(context: ContextTypes.DEFAULT_TYPE):
             save_wallets(chat_id, wallets)
 
 
-# -------- Flask app for health checks and webhooks --------
-app = Flask(__name__)
-application = None  # Global for webhook
-
-@app.route('/')
-def home():
-    return "Bot is running!"
-
-@app.route('/health')
-def health():
-    return {"status": "ok"}
-
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    update = Update.de_json(request.get_json(force=True), application.bot)
-    if update:
-        asyncio.run(application.process_update(update))
-    return 'ok'
-
 # -------- Main --------
 def setup_bot():
-    global application
     application = Application.builder().token(TELEGRAM_TOKEN).build()
-
-    # Set webhook
-    if WEBHOOK_URL and not WEBHOOK_URL.startswith('http://localhost'):
-        asyncio.run(application.bot.set_webhook(url=WEBHOOK_URL))
-        log.info(f"Webhook set to {WEBHOOK_URL}")
 
     # Command handlers
     application.add_handler(CommandHandler("start", cmd_start))
@@ -1148,11 +1120,9 @@ def setup_bot():
 
     log.info("Bot starting...")
 
-    # Run Flask app in thread
-    if not os.getenv('VERCEL'):
-        def run_flask():
-            app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+    return application
 
-        threading.Thread(target=run_flask).start()
+application = setup_bot()
 
-setup_bot()
+if __name__ == '__main__':
+    asyncio.run(application.run_polling())
