@@ -1,33 +1,20 @@
-# TODO: Handle Exceptions in main.py
+# TODO: Fix Bot Command Issues
 
-## Command Handlers
-- [ ] Add try-except to cmd_start
-- [ ] Add try-except to cmd_crypto
-- [ ] Add try-except to cmd_chart
-- [ ] Add try-except to cmd_sui
-- [ ] Add try-except to cmd_yt
-- [ ] Add try-except to cmd_img
-- [ ] Add try-except to cmd_video
-- [ ] Add try-except to cmd_note
-- [ ] Add try-except to cmd_notes
-- [ ] Add try-except to cmd_delnote
-- [ ] Add try-except to cmd_clearnotes
-- [ ] Add try-except to cmd_warn
-- [ ] Add try-except to cmd_warns
-- [ ] Add try-except to cmd_unwarn
-- [ ] Add try-except to cmd_mute
-- [ ] Add try-except to cmd_unmute
-- [ ] Add try-except to cmd_ban
-- [ ] Add try-except to cmd_kick
-- [ ] Add try-except to cmd_addwallet
-- [ ] Add try-except to cmd_delwallet
-- [ ] Add try-except to cmd_mywallets
+## Webhook Setup
+- [x] Make WEBHOOK_URL dynamic using RENDER_EXTERNAL_URL
+- [ ] Make main() async to properly await set_webhook
+- [ ] Test webhook registration
 
-## Message Handler
-- [ ] Add try-except to handle_message
+## Command Debugging
+- [ ] Check if commands are registered correctly
+- [ ] Verify mention check in groups
+- [ ] Add logging to command handlers
 
-## Background Job
-- [ ] Enhance try-except in job_watch_wallets
+## Exception Handling
+- [ ] Add try-except to all command handlers
+- [ ] Add try-except to message handler
+- [ ] Add try-except to wallet job
 
-## Main Function
-- [ ] Add try-except around app.run_polling in main()
+## Testing
+- [ ] Test bot locally with polling mode
+- [ ] Test webhook mode on Render
