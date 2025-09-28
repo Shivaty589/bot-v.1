@@ -1,0 +1,8 @@
+python-telegram-bot==22.3
+requests
+beautifulsoup4
+google-generativeai
+matplotlib
+pillow
+python-dotenv
+flask
