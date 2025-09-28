@@ -1,4 +1,3 @@
-# main.py
 """
 Telegram bot: AI chat (Gemini/OpenAI fallback), Sui wallet monitor (timestamp-based "realtime" polling),
 DexScreener Sui token info, CoinGecko/Binance price, Binance chart generation, image/video generation,
@@ -19,6 +18,7 @@ import re
 import urllib.parse
 import base64
 import logging
+import asyncio
 from io import BytesIO
 from datetime import datetime, timedelta
 from glob import glob
@@ -34,7 +34,7 @@ except Exception:
 
 from telegram import Update, ChatPermissions
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
-from flask import Flask
+from flask import Flask, request
 import threading
 
 # dotenv support
@@ -52,6 +52,7 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 HF_API_KEY = os.getenv("HF_API_KEY")  # optional (HF text->video)
 YOUTUBE_KEY = os.getenv("YOUTUBE_KEY")  # optional
 DATA_DIR = os.getenv("DATA_DIR", "data")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://bot-v-1-1.onrender.com/webhook")
 
 # Sui RPC endpoints (primary + fallbacks)
 SUI_RPC = os.getenv("SUI_RPC", "https://fullnode.mainnet.sui.io:443")
@@ -579,7 +580,7 @@ def load_wallets(chat_id: int):
                 return json.load(f)
     except Exception as e:
         log.info("load_wallets error: %s", e)
-    return {}  # {address: {"last_ts": int_ms, "antidupe":[digests...]}}
+    return {}  # {address: {"last_ts": int_ms, "antidupe":[digests...]}} 
 
 
 def save_wallets(chat_id: int, data):
@@ -965,8 +966,7 @@ async def cmd_addwallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Wallet commands are private only.")
         return
     if not context.args:
-        await update.message.reply_text("Usage: /addwallet <sui_address>")
-        return
+        return await update.message.reply_text("Usage: /addwallet <sui_address>")
     addr = context.args[0].strip()
     if not re.match(r'^0x[a-fA-F0-9]{64}$', addr):
         await update.message.reply_text("❌ Invalid Sui address.")
@@ -1080,11 +1080,11 @@ async def wallet_job(context: ContextTypes.DEFAULT_TYPE):
     for addr, data in wallets.items():
         last_ts = data["last_ts"]
         txs = sui_query_txs_for_address(addr, "from", limit=5)  # Recent txs
-        new_ts = max([int(tx.get("timestampMs", 0)) for tx in txs] or [0])
+        new_ts = max([int(tx.get("timestampMs") or 0) for tx in txs] or [0])
         if new_ts > last_ts:
             # Send alert for new activity
             for tx in txs:
-                if int(tx.get("timestampMs", 0)) > last_ts:
+                if int(tx.get("timestampMs") or 0) > last_ts:
                     summary, digest, ts = summarize_tx_for_addr(tx, addr, {})
                     await context.bot.send_message(chat_id=chat_id, text=summary)
             data["last_ts"] = new_ts
@@ -1093,7 +1093,7 @@ async def wallet_job(context: ContextTypes.DEFAULT_TYPE):
     context.job_queue.run_repeating(wallet_job, interval=WALLET_SCAN_SEC, data={"chat_id": chat_id}, name=f"wallet_{chat_id}")
 
 
-# -------- Flask app for health checks --------
+# -------- Flask app for health checks and webhooks --------
 app = Flask(__name__)
 
 @app.route('/')
@@ -1104,9 +1104,18 @@ def home():
 def health():
     return {"status": "ok"}
 
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    update = Update.de_json(request.get_json(force=True), application.bot)
+    application.process_update(update)
+    return 'ok'
+
 # -------- Main --------
 if __name__ == "__main__":
     application = Application.builder().token(TELEGRAM_TOKEN).build()
+
+    # Set webhook
+    application.bot.set_webhook(url=WEBHOOK_URL)
 
     # Command handlers
     application.add_handler(CommandHandler("start", cmd_start))
@@ -1134,13 +1143,6 @@ if __name__ == "__main__":
             application.job_queue.run_repeating(wallet_job, interval=WALLET_SCAN_SEC, data={"chat_id": chat_id}, name=f"wallet_{chat_id}")
 
     log.info("Bot starting...")
-
-    # Run bot in a thread
-    def run_bot():
-        application.run_polling(drop_pending_updates=True)
-
-    bot_thread = threading.Thread(target=run_bot)
-    bot_thread.start()
 
     # Run Flask app
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
