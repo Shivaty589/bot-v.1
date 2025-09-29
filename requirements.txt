@@ -6,3 +6,4 @@ matplotlib
 pillow
 python-dotenv
 flask
+nest_asyncio

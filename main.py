@@ -42,6 +42,9 @@ try:
 except Exception:
     pass
 
+import nest_asyncio
+nest_asyncio.apply()
+
 # -------- CONFIG (env) --------
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("BOT_TOKEN")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")  # optional (Gemini)
@@ -1198,5 +1201,9 @@ def setup_bot():
 
 application = setup_bot()
 
+async def main():
+    await application.initialize()
+    await application.run_polling()
+
 if __name__ == '__main__':
-    asyncio.run(application.run_polling())
+    asyncio.run(main())
