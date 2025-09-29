@@ -390,6 +390,28 @@ def get_crypto_price(symbol: str):
     return None, None, None
 
 
+def get_trending_coins(limit: int = 5):
+    try:
+        j = safe_get_json("https://api.coingecko.com/api/v3/search/trending")
+        if not j or "coins" not in j:
+            return []
+        coins = []
+        for item in j["coins"][:limit]:
+            coin = item.get("item", {})
+            symbol = coin.get("symbol", "").upper()
+            name = coin.get("name", "")
+            price, _, _ = get_crypto_price(symbol)
+            coins.append({
+                "symbol": symbol,
+                "name": name,
+                "price": price
+            })
+        return coins
+    except Exception as e:
+        log.info("get_trending_coins error: %s", e)
+        return []
+
+
 # -------- DexScreener / Sui token info --------
 def format_usd(n):
     try:
@@ -757,6 +779,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Commands:\n"
             "• /p <symbol> — crypto price\n"
             "• /chart <symbol> <interval> — Binance klines (1m,5m,15m,1h,1d)\n"
+            "• /trending <limit> — top trending cryptos\n"
             "• /sui <contract> — Sui token info (DexScreener)\n"
             "• /addwallet <sui_addr> — (private only) monitor wallet\n"
             "• /delwallet <sui_addr>, /mywallets — (private only)\n"
@@ -837,6 +860,56 @@ async def cmd_chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         log.info("chart error: %s", e)
         await update.message.reply_text("❌ Error generating chart.")
+
+
+async def cmd_trending(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if _deny_if_group_for_private_only(update) and not (await _mentioned(
+            update, context)):
+        return
+    limit = int(context.args[0]) if context.args and context.args[0].isdigit() else 5
+    trending = await run_blocking(get_trending_coins, limit)
+    if not trending:
+        return await update.message.reply_text("❌ Failed to fetch trending coins.")
+    lines = ["🔥 Top Trending Cryptos:"]
+    for i, coin in enumerate(trending, 1):
+        price_str = format_price(coin["price"]) if coin["price"] else "N/A"
+        lines.append(f"{i}. {coin['name']} ({coin['symbol']}) — {price_str}")
+    await update.message.reply_text("\n".join(lines))
+    # Generate chart for top trending
+    top_symbol = trending[0]["symbol"]
+    pair = f"{re.sub(r'[^A-Za-z0-9]','',top_symbol).upper()}USDT"
+    url = f"https://api.binance.com/api/v3/klines?symbol={pair}&interval=1h&limit={BINANCE_KLINES_LIMIT}"
+    try:
+        r = requests.get(url, timeout=10)
+        if r.status_code != 200:
+            return await update.message.reply_text("❌ No chart available for top trending coin.")
+        data = r.json()
+        closes = [float(x[4]) for x in data]
+        volumes = [float(x[5]) for x in data]
+        times = [int(x[0]) for x in data]
+        try:
+            import matplotlib.pyplot as plt
+        except Exception:
+            import subprocess
+            subprocess.check_call([
+                sys.executable, "-m", "pip", "install", "matplotlib", "pillow"
+            ])
+            import matplotlib.pyplot as plt
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
+        ax1.plot([datetime.fromtimestamp(t / 1000) for t in times], closes)
+        ax1.set_title(f"{top_symbol.upper()} 1h Price (Top Trending)")
+        ax2.bar([datetime.fromtimestamp(t / 1000) for t in times], volumes)
+        ax2.set_title("Volume")
+        plt.tight_layout()
+        buf = BytesIO()
+        plt.savefig(buf, format="png")
+        plt.close()
+        buf.seek(0)
+        await update.message.reply_photo(
+            photo=buf, caption=f"📈 {top_symbol.upper()} 1h Chart (Top Trending)")
+    except Exception as e:
+        log.info("trending chart error: %s", e)
+        await update.message.reply_text("❌ Error generating chart for top trending.")
 
 
 async def cmd_sui(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1096,6 +1169,7 @@ def setup_bot():
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("p", cmd_crypto))
     application.add_handler(CommandHandler("chart", cmd_chart))
+    application.add_handler(CommandHandler("trending", cmd_trending))
     application.add_handler(CommandHandler("sui", cmd_sui))
     application.add_handler(CommandHandler("yt", cmd_yt))
     application.add_handler(CommandHandler("img", cmd_img))
