@@ -1,4 +1,3 @@
-# main.py
 """
 Telegram bot: AI chat (Gemini/OpenAI fallback), Sui wallet monitor (timestamp-based "realtime" polling),
 DexScreener Sui token info, CoinGecko/Binance price, Binance chart generation, image/video generation,
@@ -19,6 +18,7 @@ import re
 import urllib.parse
 import base64
 import logging
+import asyncio
 from io import BytesIO
 from datetime import datetime, timedelta
 from glob import glob
@@ -32,10 +32,8 @@ try:
 except Exception:
     genai = None
 
-from telegram import Update, ChatPermissions
+from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
-from flask import Flask
-import threading
 
 # dotenv support
 try:
@@ -392,6 +390,28 @@ def get_crypto_price(symbol: str):
     return None, None, None
 
 
+def get_trending_coins(limit: int = 5):
+    try:
+        j = safe_get_json("https://api.coingecko.com/api/v3/search/trending")
+        if not j or "coins" not in j:
+            return []
+        coins = []
+        for item in j["coins"][:limit]:
+            coin = item.get("item", {})
+            symbol = coin.get("symbol", "").upper()
+            name = coin.get("name", "")
+            price, _, _ = get_crypto_price(symbol)
+            coins.append({
+                "symbol": symbol,
+                "name": name,
+                "price": price
+            })
+        return coins
+    except Exception as e:
+        log.info("get_trending_coins error: %s", e)
+        return []
+
+
 # -------- DexScreener / Sui token info --------
 def format_usd(n):
     try:
@@ -579,7 +599,7 @@ def load_wallets(chat_id: int):
                 return json.load(f)
     except Exception as e:
         log.info("load_wallets error: %s", e)
-    return {}  # {address: {"last_ts": int_ms, "antidupe":[digests...]}}
+    return {}  # {address: {"last_ts": int_ms, "antidupe":[digests...]}} 
 
 
 def save_wallets(chat_id: int, data):
@@ -759,6 +779,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Commands:\n"
             "• /p <symbol> — crypto price\n"
             "• /chart <symbol> <interval> — Binance klines (1m,5m,15m,1h,1d)\n"
+            "• /trending <limit> — top trending cryptos\n"
             "• /sui <contract> — Sui token info (DexScreener)\n"
             "• /addwallet <sui_addr> — (private only) monitor wallet\n"
             "• /delwallet <sui_addr>, /mywallets — (private only)\n"
@@ -839,6 +860,56 @@ async def cmd_chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         log.info("chart error: %s", e)
         await update.message.reply_text("❌ Error generating chart.")
+
+
+async def cmd_trending(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if _deny_if_group_for_private_only(update) and not (await _mentioned(
+            update, context)):
+        return
+    limit = int(context.args[0]) if context.args and context.args[0].isdigit() else 5
+    trending = await run_blocking(get_trending_coins, limit)
+    if not trending:
+        return await update.message.reply_text("❌ Failed to fetch trending coins.")
+    lines = ["🔥 Top Trending Cryptos:"]
+    for i, coin in enumerate(trending, 1):
+        price_str = format_price(coin["price"]) if coin["price"] else "N/A"
+        lines.append(f"{i}. {coin['name']} ({coin['symbol']}) — {price_str}")
+    await update.message.reply_text("\n".join(lines))
+    # Generate chart for top trending
+    top_symbol = trending[0]["symbol"]
+    pair = f"{re.sub(r'[^A-Za-z0-9]','',top_symbol).upper()}USDT"
+    url = f"https://api.binance.com/api/v3/klines?symbol={pair}&interval=1h&limit={BINANCE_KLINES_LIMIT}"
+    try:
+        r = requests.get(url, timeout=10)
+        if r.status_code != 200:
+            return await update.message.reply_text("❌ No chart available for top trending coin.")
+        data = r.json()
+        closes = [float(x[4]) for x in data]
+        volumes = [float(x[5]) for x in data]
+        times = [int(x[0]) for x in data]
+        try:
+            import matplotlib.pyplot as plt
+        except Exception:
+            import subprocess
+            subprocess.check_call([
+                sys.executable, "-m", "pip", "install", "matplotlib", "pillow"
+            ])
+            import matplotlib.pyplot as plt
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
+        ax1.plot([datetime.fromtimestamp(t / 1000) for t in times], closes)
+        ax1.set_title(f"{top_symbol.upper()} 1h Price (Top Trending)")
+        ax2.bar([datetime.fromtimestamp(t / 1000) for t in times], volumes)
+        ax2.set_title("Volume")
+        plt.tight_layout()
+        buf = BytesIO()
+        plt.savefig(buf, format="png")
+        plt.close()
+        buf.seek(0)
+        await update.message.reply_photo(
+            photo=buf, caption=f"📈 {top_symbol.upper()} 1h Chart (Top Trending)")
+    except Exception as e:
+        log.info("trending chart error: %s", e)
+        await update.message.reply_text("❌ Error generating chart for top trending.")
 
 
 async def cmd_sui(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -965,8 +1036,7 @@ async def cmd_addwallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Wallet commands are private only.")
         return
     if not context.args:
-        await update.message.reply_text("Usage: /addwallet <sui_address>")
-        return
+        return await update.message.reply_text("Usage: /addwallet <sui_address>")
     addr = context.args[0].strip()
     if not re.match(r'^0x[a-fA-F0-9]{64}$', addr):
         await update.message.reply_text("❌ Invalid Sui address.")
@@ -1080,38 +1150,26 @@ async def wallet_job(context: ContextTypes.DEFAULT_TYPE):
     for addr, data in wallets.items():
         last_ts = data["last_ts"]
         txs = sui_query_txs_for_address(addr, "from", limit=5)  # Recent txs
-        new_ts = max([int(tx.get("timestampMs", 0)) for tx in txs] or [0])
+        new_ts = max([int(tx.get("timestampMs") or 0) for tx in txs] or [0])
         if new_ts > last_ts:
             # Send alert for new activity
             for tx in txs:
-                if int(tx.get("timestampMs", 0)) > last_ts:
+                if int(tx.get("timestampMs") or 0) > last_ts:
                     summary, digest, ts = summarize_tx_for_addr(tx, addr, {})
                     await context.bot.send_message(chat_id=chat_id, text=summary)
             data["last_ts"] = new_ts
             save_wallets(chat_id, wallets)
-    # Reschedule
-    context.job_queue.run_repeating(wallet_job, interval=WALLET_SCAN_SEC, data={"chat_id": chat_id}, name=f"wallet_{chat_id}")
 
-
-# -------- Flask app for health checks --------
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "Bot is running!"
-
-@app.route('/health')
-def health():
-    return {"status": "ok"}
 
 # -------- Main --------
-if __name__ == "__main__":
+def setup_bot():
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
     # Command handlers
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("p", cmd_crypto))
     application.add_handler(CommandHandler("chart", cmd_chart))
+    application.add_handler(CommandHandler("trending", cmd_trending))
     application.add_handler(CommandHandler("sui", cmd_sui))
     application.add_handler(CommandHandler("yt", cmd_yt))
     application.add_handler(CommandHandler("img", cmd_img))
@@ -1128,19 +1186,17 @@ if __name__ == "__main__":
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     # Start wallet jobs for existing users (load from data dir)
-    for file in glob(os.path.join(DATA_DIR, "wallets_user_*.json")):
-        chat_id = int(re.search(r"wallets_user_(\d+)", file).group(1))
-        if load_wallets(chat_id):  # If has wallets
-            application.job_queue.run_repeating(wallet_job, interval=WALLET_SCAN_SEC, data={"chat_id": chat_id}, name=f"wallet_{chat_id}")
+    if not os.getenv('VERCEL'):
+        for file in glob(os.path.join(DATA_DIR, "wallets_user_*.json")):
+            chat_id = int(re.search(r"wallets_user_(\d+)", file).group(1))
+            if load_wallets(chat_id):  # If has wallets
+                application.job_queue.run_repeating(wallet_job, interval=WALLET_SCAN_SEC, data={"chat_id": chat_id}, name=f"wallet_{chat_id}")
 
     log.info("Bot starting...")
 
-    # Run bot in a thread
-    def run_bot():
-        application.run_polling(drop_pending_updates=True)
+    return application
 
-    bot_thread = threading.Thread(target=run_bot)
-    bot_thread.start()
+application = setup_bot()
 
-    # Run Flask app
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+if __name__ == '__main__':
+    asyncio.run(application.run_polling())
